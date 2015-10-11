@@ -1,5 +1,8 @@
+import os
+import shutil
+import time
+
 from selenium import webdriver
-import json
 
 import config
 
@@ -8,86 +11,90 @@ def setup():
     s = webdriver.Firefox()
 
 def log(s):
-    #print(s)
+    print(s)
     pass
 
+def get(url):
+    log('--> ' + url)
+    s.get(url)
+    time.sleep(0.5)
+
 def login():
-    s.get('https://www.bibliotheek.nl/ebooks')
+    get('https://www.bibliotheek.nl/ebooks')
     s.find_element_by_link_text('Inloggen').click()
     s.find_element_by_id("username").send_keys(config.username)
     s.find_element_by_id("password").send_keys(config.password)
     form = s.find_element_by_id('passwordForm')
     form.find_element_by_class_name('button').click()
-
-def books_url():
-    return 'https://www.bibliotheek.nl/ebooks/MijnBoekenplank'
-
-def book_url(book_id):
-    return ('https://cb.libreprint.com/Home/GetContentsComplex?' +
-            'bookID=' + book_id)
+    time.sleep(0.5)
 
 def chapter_url(book_id, chapter_id):
     return ('https://cb.libreprint.com/Home/GetComponentComplex?' +
             'bookID=' + book_id + '&componentId=' + chapter_id +
             '&excludeCss=false')
 
-def get_book(author, book_title, book_id):
-    url = book_url(book_id)
-    log(url); s.get(url)
+def get_chapters(book_dir, book_url):
+    get(book_url)
+    book_id = book_url.split('?id=')[1]
 
-    print author, book_title
+    shutil.rmtree(book_dir, True)
+    os.makedirs(book_dir)
+    log('Creating ' + book_dir)
 
-    def chapter_key(chapter):
-        chapter_id, chapter_title = chapter
-        # chapter_id: "x9789023472193.html6.xhtml#toc_marker_9789023472193_-3"
-        # Take the number at the end.
-        return int(chapter_id.split('-')[-1])
+    chapter_ids = s.execute_script('return getComponentsPassTrough()();')
+    chapter_ids = [c for c in chapter_ids if c != 'voorblad.html']
 
-    text = s.find_element_by_tag_name('body').text
-    chapters = json.loads(text).items()
-    for i, (chapter_id, chapter_title) in enumerate(
-            sorted(chapters, key=chapter_key)):
-        # chapter_id: "x9789023472193.html6.xhtml#toc_marker_9789023472193_-3"
-        # Drop the part after the '#'.
-        chapter_id = chapter_id.split('#')[0]
+    for i, chapter_id in enumerate(chapter_ids):
+        get(chapter_url(book_id, chapter_id))
 
-        url = chapter_url(book_id, chapter_id)
-        log(url); s.get(url)
+        filename = str(i).rjust(2, '0') + '.html'
+        filepath = os.path.join(book_dir, filename)
+        with open(filepath, 'w') as f:
+            f.write('<meta http-equiv="content-type" content="text/html; charset=UTF-8">')
 
-        #s.page_source
-        print i, chapter_title
-        break
+            f.write('''
+<style type="text/css">
+    span.wpt-cursief { font-style: italic; }
+    span.wpt-vet { font-weight: bold; }
+    span.wpt-vetcursief { font-style: italic; font-weight: bold }
+    span.wpt-romein { font-style: italic; }
+</style>
+            ''')
+
+            f.write(s.page_source.encode('UTF-8'))
+            log('Writing ' + filepath)
 
 def get_books():
-    url = books_url()
-    log(url); s.get(url)
+    get('https://www.bibliotheek.nl/ebooks/MijnBoekenplank')
 
+    # Store books in list first, to prevent "Element not found in the
+    # cache".
     books = []
     for book in s.find_elements_by_class_name('content'):
         author = book.find_element_by_class_name('author').text
         title = book.find_element_by_tag_name('h4').text
 
-        link_text = 'E-book online lezen'
-        links = book.find_elements_by_link_text(link_text)
+        book_dir = 'boeken/{author}-{title}'.format(author=author, title=title)
+
+        links = book.find_elements_by_link_text('E-book online lezen')
         if not links:
-            log('Skipping: ' + author + ' - ' + title)
-            log('No link text "' + link_text + '"')
+            log('Skipping "' + book_dir + '". No link text.')
             continue
 
-        book_id = links[0].get_attribute('href').split('?id=')[1]
-        books.append((author, title, book_id))
+        if os.path.exists(book_dir):
+            log('Skipping "' + book_dir + '". Already exists.')
+            continue
 
-    for author, title, book_id in books:
-        get_book(author, title, book_id)
+        book_url = links[0].get_attribute('href')
+        books.append((book_dir, book_url))
 
-# Willem Frederik Hermans
-# De laatste roker
-sample_book_id = '43476e47-ee8f-4f53-986a-778a80d87f52'
+    for book_dir, book_url in books:
+        get_chapters(book_dir, book_url)
 
 def main():
     setup()
     login()
-    get_book(sample_book_id)
+    get_books()
 
 if __name__ == '__main__':
     main()
